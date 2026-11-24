@@ -51,6 +51,13 @@ class ToolCall(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
     tool_calls: list[ToolCall]
+    # "llm" = answered by the LLM agent; "fallback" = rule-based planner (no key,
+    # budget reached, or provider error). fallback_reason says which.
+    mode: str
+    fallback_reason: str | None = None
+    # CONCEPT (cost observability): what this answer cost. Logged per request, it
+    # tells you cost per conversation, which drives model choice and pricing.
+    cost_usd: float
     # CONCEPT (observability): a unique ID per request. It goes in logs and traces
     # too, so when a member reports a bad answer, support can find the exact request.
     request_id: str

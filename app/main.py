@@ -8,20 +8,40 @@ awaits a slow tool, the server keeps handling other members' requests.
 This is why all the M1 rules matter: one blocking call here stalls EVERYONE.
 """
 
+import logging
 import uuid
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import FastAPI, Path, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from app import agent
+from app import llm_agent
 from app.auth import CurrentMember
 from app.schemas import ChatRequest, ChatResponse, ClaimOut, CoverageOut, DeductibleOut
 from app.tools import ToolError, check_coverage, get_claim_status, get_deductible, run_tool
 
+# Show INFO-level logs (e.g. "LLM fallback: ...") in the terminal.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+
+# CONCEPT (FastAPI): a LIFESPAN function runs setup code before the server starts
+# taking requests (before `yield`) and cleanup code when it shuts down (after
+# `yield`). Typical uses: open/close DB pools and HTTP clients, load ML models
+# into memory once (we'll load the router and emergency models here in M6/M7).
+# PYTHON: @asynccontextmanager turns an async generator (a function with `yield`)
+# into an `async with`-style context manager, which is what FastAPI expects.
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
+    yield                              # the server runs while we're paused here
+    await llm_agent.close_client()     # shutdown: close LLM connections cleanly
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title="Healthcare AI Assistant",
-    version="0.2.0",
+    version="0.3.0",
     description="Member-facing health plan assistant (synthetic data only). "
                 "Click **Authorize** and paste `token-asha` or `token-ben` to log in.",
 )
@@ -99,8 +119,16 @@ async def coverage(
 # like member_id) -> automatic 422 with details, and this function never runs.
 @app.post("/chat", response_model=ChatResponse)
 async def chat(body: ChatRequest, member_id: CurrentMember) -> ChatResponse:
-    reply, tool_calls = await agent.answer(member_id, body.message)
+    # M3: the LLM agent. It falls back to the rule-based planner by itself when needed.
+    result = await llm_agent.answer(member_id, body.message)
     # NOTE: returning tool_calls (including raw results) is great for debugging and
     # evals. In production you might hide results from the client and keep them
     # only in server-side traces.
-    return ChatResponse(reply=reply, tool_calls=tool_calls, request_id=str(uuid.uuid4()))
+    return ChatResponse(
+        reply=result.reply,
+        tool_calls=result.tool_calls,
+        mode=result.mode,
+        fallback_reason=result.fallback_reason,
+        cost_usd=round(result.cost_usd, 6),
+        request_id=str(uuid.uuid4()),
+    )

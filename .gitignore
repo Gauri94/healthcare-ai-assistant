@@ -11,3 +11,6 @@ wheels/
 
 # Secrets (API keys) - never commit
 .env
+
+# macOS Finder metadata
+.DS_Store

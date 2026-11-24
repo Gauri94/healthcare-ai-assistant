@@ -37,8 +37,8 @@ curl -s -X POST http://127.0.0.1:8000/chat \
 |---|---|---|---|
 | M1 | Async tools | Concurrent tool calls, timeouts, authorization inside tools | Done |
 | M2 | FastAPI API | `/chat`, Pydantic validation, token auth dependency, IDOR-safe routes | Done |
-| M3 | LLM agent loop | Claude tool calling, parallel tool execution, retries, no-LLM fallback | Next |
-| M4 | Streaming | Token-by-token replies over Server-Sent Events | |
+| M3 | LLM agent loop | Tool calling via OpenRouter, parallel tool execution, retries, spend cap, no-LLM fallback | Done |
+| M4 | Streaming | Token-by-token replies over Server-Sent Events | Next |
 | M5 | Test suite | pytest async tests, mocked LLM, security and concurrency tests | |
 | M6 | Emergency detector | Rules + classifier, threshold tuned for a recall target, fixed safety reply | |
 | M7 | Router | TF-IDF + logistic regression, macro-F1, calibration, clarify below a confidence threshold | |

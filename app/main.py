@@ -17,8 +17,9 @@ from typing import Annotated
 from fastapi import FastAPI, Path, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from app import llm_agent
+from app import graph_agent, llm_agent
 from app.auth import CurrentMember
+from app.config import get_settings
 from app.schemas import ChatRequest, ChatResponse, ClaimOut, CoverageOut, DeductibleOut
 from app.tools import ToolError, check_coverage, get_claim_status, get_deductible, run_tool
 
@@ -119,8 +120,12 @@ async def coverage(
 # like member_id) -> automatic 422 with details, and this function never runs.
 @app.post("/chat", response_model=ChatResponse)
 async def chat(body: ChatRequest, member_id: CurrentMember) -> ChatResponse:
-    # M3: the LLM agent. It falls back to the rule-based planner by itself when needed.
-    result = await llm_agent.answer(member_id, body.message)
+    # Pick the engine from settings. Both fall back to the rule-based planner by
+    # themselves when needed (no key, budget reached, provider error).
+    if get_settings().agent_engine == "langgraph":
+        result = await graph_agent.answer(member_id, body.message, body.conversation_id)
+    else:
+        result = await llm_agent.answer(member_id, body.message)
     # NOTE: returning tool_calls (including raw results) is great for debugging and
     # evals. In production you might hide results from the client and keep them
     # only in server-side traces.
@@ -130,5 +135,6 @@ async def chat(body: ChatRequest, member_id: CurrentMember) -> ChatResponse:
         mode=result.mode,
         fallback_reason=result.fallback_reason,
         cost_usd=round(result.cost_usd, 6),
+        conversation_id=result.conversation_id,
         request_id=str(uuid.uuid4()),
     )

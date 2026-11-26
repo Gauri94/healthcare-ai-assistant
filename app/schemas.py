@@ -34,6 +34,11 @@ class ChatRequest(BaseModel):
     # prompt-injection payloads.
     message: str = Field(min_length=1, max_length=2000, description="What the member typed.")
 
+    # Send back the conversation_id from the previous response to continue a
+    # conversation (the assistant remembers earlier turns). Leave it out to start
+    # a new one. The pattern limits it to safe characters and a sane length.
+    conversation_id: str | None = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+
 
 class ToolCall(BaseModel):
     """A record of one tool the assistant ran while answering. Useful for debugging,
@@ -58,6 +63,9 @@ class ChatResponse(BaseModel):
     # CONCEPT (cost observability): what this answer cost. Logged per request, it
     # tells you cost per conversation, which drives model choice and pricing.
     cost_usd: float
+    # Pass this back in the next request to continue the same conversation.
+    # None with AGENT_ENGINE=loop, which doesn't remember earlier turns.
+    conversation_id: str | None = None
     # CONCEPT (observability): a unique ID per request. It goes in logs and traces
     # too, so when a member reports a bad answer, support can find the exact request.
     request_id: str

@@ -34,6 +34,16 @@ class ToolError(Exception):
         self.status_code = status_code
 
 
+async def simulate_latency(seconds: float) -> None:
+    """Pretend to wait on a slow external API (non-blocking).
+
+    CONCEPT (testability): every fake delay goes through this ONE function, so tests
+    can swap it for a no-op and run in milliseconds instead of seconds (see
+    tests/conftest.py). Real tools would await an HTTP or database call here instead.
+    """
+    await asyncio.sleep(seconds)
+
+
 # PYTHON: `async def` defines a COROUTINE FUNCTION. Calling get_deductible("M123")
 # does NOT run it; it returns a paused coroutine object. It only runs when
 # something awaits it (`await get_deductible(...)`) or schedules it (asyncio.gather).
@@ -49,7 +59,7 @@ async def get_deductible(member_id: str) -> dict:
     # CONCEPT: `await` = "pause this coroutine until the slow thing finishes, and let
     # the event loop run other work meanwhile". asyncio.sleep is a NON-BLOCKING wait,
     # standing in for network latency. (time.sleep would BLOCK the whole loop.)
-    await asyncio.sleep(0.8)  # simulated API latency
+    await simulate_latency(0.8)  # simulated API latency
 
     # PYTHON: dict.get(key) returns None if the key is missing, instead of raising
     # KeyError like data.MEMBERS[member_id] would.
@@ -67,7 +77,7 @@ async def get_deductible(member_id: str) -> dict:
 
 
 async def get_claim_status(member_id: str, claim_id: str) -> dict:
-    await asyncio.sleep(1.0)
+    await simulate_latency(1.0)
     claim = data.CLAIMS.get(claim_id)
 
     # SECURITY: AUTHORIZATION INSIDE THE TOOL. claim_id may come from the member's
@@ -90,7 +100,7 @@ async def get_claim_status(member_id: str, claim_id: str) -> dict:
 
 
 async def check_coverage(member_id: str, cpt_code: str) -> dict:
-    await asyncio.sleep(1.5)  # the slowest tool, so it decides the total time in gather()
+    await simulate_latency(1.5)  # the slowest tool, so it decides the total time in gather()
     member = data.MEMBERS.get(member_id)
     if member is None:
         raise ToolError("Member not found.")

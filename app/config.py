@@ -12,6 +12,7 @@ startup with a clear error, not halfway through a member's chat.
 """
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -32,6 +33,13 @@ class Settings(BaseSettings):
     # a one-line .env change, e.g. LLM_MODEL=openai/gpt-5-mini. This makes model
     # bake-offs (same evals, different models) trivial.
     llm_model: str = "anthropic/claude-haiku-5.5"
+
+    # Which agent implementation answers /chat:
+    #   "langgraph" = app/graph_agent.py (LangGraph, remembers earlier turns)
+    #   "loop"      = app/llm_agent.py   (hand-written loop, one turn at a time)
+    # PYTHON: Literal[...] restricts the value to these exact strings; anything
+    # else in .env fails validation at startup.
+    agent_engine: Literal["langgraph", "loop"] = "langgraph"
 
     # Prices in USD per 1 million tokens, from OpenRouter's model list (Nov 2026).
     # If you change llm_model, update these too, or the spend tracker will be wrong.

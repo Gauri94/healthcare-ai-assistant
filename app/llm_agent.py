@@ -73,6 +73,7 @@ class AgentResult:
     fallback_reason: str | None = None
     llm_calls: int = 0
     cost_usd: float = 0.0
+    conversation_id: str | None = None  # set by the LangGraph engine (multi-turn memory)
 
 
 # PYTHON: @lru_cache on a no-argument function = the body runs ONCE, and every later
@@ -114,6 +115,54 @@ async def close_client() -> None:
     if _client.cache_info().currsize:
         await _client().close()
         _client.cache_clear()
+
+
+async def execute_tool_calls(member_id: str, tool_calls: list) -> tuple[list[dict], list[ToolCall]]:
+    """Validate and run the tool calls from one LLM reply.
+
+    Returns (tool_messages to send back to the LLM, ToolCall records for the API).
+    Used by BOTH engines (this loop and app/graph_agent.py), so validation, auth and
+    timeouts are identical whichever engine runs.
+    """
+    # Validate every call first (untrusted LLM output), then run the valid ones.
+    # PYTHON: a list of (tool_call, args_or_error) pairs.
+    validated: list[tuple] = []
+    # The SDK allows "function" tool calls and "custom" tool calls. We only offer
+    # function tools, so we keep only those. isinstance also tells the type
+    # checker that tc.function exists below.
+    function_calls = [tc for tc in tool_calls if isinstance(tc, ChatCompletionMessageFunctionToolCall)]
+    for tc in function_calls:
+        try:
+            validated.append((tc, parse_tool_call(tc.function.name, tc.function.arguments)))
+        except ToolError as e:
+            validated.append((tc, e))
+
+    # ---- Run the tools CONCURRENTLY, each with a timeout (M1 patterns) ----
+    async def _run(tc, args_or_err):
+        if isinstance(args_or_err, ToolError):
+            raise args_or_err  # invalid call: report the validation error as its result
+        return await run_tool(run_llm_tool_call(member_id, tc.function.name, args_or_err))
+
+    outcomes = await asyncio.gather(*(_run(tc, a) for tc, a in validated), return_exceptions=True)
+
+    # ---- Build the messages for the LLM, and the records for the API response ----
+    tool_messages: list[dict] = []
+    records: list[ToolCall] = []
+    for (tc, args_or_err), outcome in zip(validated, outcomes):
+        args = args_or_err if isinstance(args_or_err, dict) else {}
+        if isinstance(outcome, ToolError):
+            content = {"error": str(outcome)}
+            records.append(ToolCall(name=tc.function.name, args=args, ok=False, error=str(outcome)))
+        elif isinstance(outcome, BaseException):
+            raise outcome  # a real bug: fail loudly (500), don't hide it from the logs
+        else:
+            content = outcome
+            records.append(ToolCall(name=tc.function.name, args=args, ok=True, result=outcome))
+        # CONCEPT: a "tool" message answers one specific tool call, matched by
+        # tool_call_id. That's how the model knows which result belongs to which
+        # call when it requested several at once.
+        tool_messages.append({"role": "tool", "tool_call_id": tc.id, "content": json.dumps(content)})
+    return tool_messages, records
 
 
 async def _fallback(member_id: str, message: str, reason: str, so_far: AgentResult | None = None) -> AgentResult:
@@ -177,42 +226,10 @@ async def answer(member_id: str, message: str) -> AgentResult:
         # can see what it asked for. exclude_none drops empty fields.
         messages.append(msg.model_dump(exclude_none=True))
 
-        # Validate every call first (untrusted LLM output), then run the valid ones.
-        # PYTHON: a list of (tool_call, args_or_error) pairs.
-        validated: list[tuple] = []
-        # The SDK allows "function" tool calls and "custom" tool calls. We only offer
-        # function tools, so we keep only those. isinstance also tells the type
-        # checker that tc.function exists below.
-        function_calls = [tc for tc in msg.tool_calls if isinstance(tc, ChatCompletionMessageFunctionToolCall)]
-        for tc in function_calls:
-            try:
-                validated.append((tc, parse_tool_call(tc.function.name, tc.function.arguments)))
-            except ToolError as e:
-                validated.append((tc, e))
-
-        # ---- 3. Run the tools CONCURRENTLY, each with a timeout (M1 patterns) ----
-        async def _run(tc, args_or_err):
-            if isinstance(args_or_err, ToolError):
-                raise args_or_err  # invalid call: report the validation error as its result
-            return await run_tool(run_llm_tool_call(member_id, tc.function.name, args_or_err))
-
-        outcomes = await asyncio.gather(*(_run(tc, a) for tc, a in validated), return_exceptions=True)
-
-        # ---- 4. Send each result back to the LLM, and record it for the API response ----
-        for (tc, args_or_err), outcome in zip(validated, outcomes):
-            args = args_or_err if isinstance(args_or_err, dict) else {}
-            if isinstance(outcome, ToolError):
-                content = {"error": str(outcome)}
-                result.tool_calls.append(ToolCall(name=tc.function.name, args=args, ok=False, error=str(outcome)))
-            elif isinstance(outcome, BaseException):
-                raise outcome  # a real bug: fail loudly (500), don't hide it from the logs
-            else:
-                content = outcome
-                result.tool_calls.append(ToolCall(name=tc.function.name, args=args, ok=True, result=outcome))
-            # CONCEPT: a "tool" message answers one specific tool call, matched by
-            # tool_call_id. That's how the model knows which result belongs to which
-            # call when it requested several at once.
-            messages.append({"role": "tool", "tool_call_id": tc.id, "content": json.dumps(content)})
+        # ---- 3 + 4. Run them and send the results back (shared with graph_agent.py) ----
+        tool_messages, records = await execute_tool_calls(member_id, msg.tool_calls)
+        messages.extend(tool_messages)
+        result.tool_calls.extend(records)
 
     # ---- Guardrail: step limit reached without a final answer ----
     logger.warning("Agent hit max_agent_steps=%d", s.max_agent_steps)

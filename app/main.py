@@ -20,11 +20,13 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from app import graph_agent, llm_agent
 from app.auth import CurrentMember
 from app.config import get_settings
+from app.safety import check_emergency
 from app.schemas import ChatRequest, ChatResponse, ClaimOut, CoverageOut, DeductibleOut
 from app.tools import ToolError, check_coverage, get_claim_status, get_deductible, run_tool
 
 # Show INFO-level logs (e.g. "LLM fallback: ...") in the terminal.
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
 
 
 # CONCEPT (FastAPI): a LIFESPAN function runs setup code before the server starts
@@ -120,6 +122,31 @@ async def coverage(
 # like member_id) -> automatic 422 with details, and this function never runs.
 @app.post("/chat", response_model=ChatResponse)
 async def chat(body: ChatRequest, member_id: CurrentMember) -> ChatResponse:
+    request_id = str(uuid.uuid4())
+
+    # ---- M6: safety check FIRST, before any LLM or tool ----
+    # CONCEPT (guardrail placement): this sits OUTSIDE both agent engines, so it
+    # protects them equally and can't be skipped by a model, a prompt injection,
+    # an outage or the budget cap. Cost $0, latency ~microseconds.
+    emergency = check_emergency(body.message)
+    if emergency is not None:
+        # SECURITY/PRIVACY: log WHICH rule fired and the request_id, NOT the
+        # message text. Health messages are sensitive (PHI); logs get copied to
+        # many systems. The request_id lets support find the case if needed.
+        logger.warning("emergency detected: category=%s rule=%s source=%s request_id=%s",
+                       emergency.category, emergency.rule, emergency.source, request_id)
+        return ChatResponse(
+            reply=emergency.reply,
+            tool_calls=[],
+            mode="emergency",
+            emergency=emergency.category,
+            cost_usd=0.0,
+            # NOTE: this turn isn't saved into LangGraph memory. That's fine: the
+            # member can continue the same conversation afterwards.
+            conversation_id=body.conversation_id,
+            request_id=request_id,
+        )
+
     # Pick the engine from settings. Both fall back to the rule-based planner by
     # themselves when needed (no key, budget reached, provider error).
     if get_settings().agent_engine == "langgraph":
@@ -136,5 +163,5 @@ async def chat(body: ChatRequest, member_id: CurrentMember) -> ChatResponse:
         fallback_reason=result.fallback_reason,
         cost_usd=round(result.cost_usd, 6),
         conversation_id=result.conversation_id,
-        request_id=str(uuid.uuid4()),
+        request_id=request_id,
     )

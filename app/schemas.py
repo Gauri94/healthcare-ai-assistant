@@ -58,8 +58,12 @@ class ChatResponse(BaseModel):
     tool_calls: list[ToolCall]
     # "llm" = answered by the LLM agent; "fallback" = rule-based planner (no key,
     # budget reached, or provider error). fallback_reason says which.
+    # "emergency" = the safety check fired and returned a fixed reply (M6).
     mode: str
     fallback_reason: str | None = None
+    # Set only when mode == "emergency": "medical" (911) or "self_harm" (988).
+    # A client app could use it to show a big "Call 911" button.
+    emergency: str | None = None
     # CONCEPT (cost observability): what this answer cost. Logged per request, it
     # tells you cost per conversation, which drives model choice and pricing.
     cost_usd: float

@@ -24,6 +24,7 @@ curl -s -X POST http://127.0.0.1:8000/chat \
 | Path | What it does |
 |---|---|
 | `app/main.py` | FastAPI app: `/chat`, direct tool endpoints, `/health`, error handling |
+| `app/safety.py` | Emergency detection before the LLM: fixed 911 / 988 replies |
 | `app/auth.py` | Login token → `member_id` (the only source of identity) |
 | `app/schemas.py` | Pydantic request/response models |
 | `app/graph_agent.py` | LangGraph agent (default): graph of nodes, multi-turn memory via a checkpointer |
@@ -43,7 +44,7 @@ curl -s -X POST http://127.0.0.1:8000/chat \
 uv run pytest -q
 ```
 
-The suite has 68 tests and runs in under a second, with no network and no LLM cost. A scripted **fake LLM** forces situations that are hard to trigger with a real model, and the tests check that the code still holds:
+The suite has about 100 tests and runs in under a second, with no network and no LLM cost. A scripted **fake LLM** forces situations that are hard to trigger with a real model, and the tests check that the code still holds:
 
 | Area | Examples |
 |---|---|
@@ -52,6 +53,7 @@ The suite has 68 tests and runs in under a second, with no network and no LLM co
 | Guardrails | Step limit on a model that never finishes; daily spend cap and kill switch; fallback on provider errors or a missing key |
 | API | 401 without a valid token, 404 for other members' data (IDOR), 422 for invalid input |
 | Concurrency | 10 simultaneous requests must overlap, which catches blocking calls in async code |
+| Safety | Emergencies get the fixed reply and never reach the LLM; look-alike benefits questions are not flagged; known gaps are tracked with strict `xfail` |
 
 Agent tests run against **both** engines, the LangGraph agent and the hand-written loop. Each protection was checked by deliberately breaking it and confirming that the matching tests fail.
 
@@ -65,7 +67,7 @@ Agent tests run against **both** engines, the LangGraph agent and the hand-writt
 | M2 | FastAPI API | `/chat`, Pydantic validation, token auth dependency, IDOR-safe routes | Done |
 | M3 | LLM agent | Tool calling via OpenRouter, parallel tool execution, retries, spend cap, no-LLM fallback; LangGraph version with multi-turn memory | Done |
 | M5 | Test suite | Async tests, fake LLM, security, guardrail and concurrency tests | Done |
-| M6 | Emergency detector | Rules + classifier, threshold tuned for a recall target, fixed safety reply | Next |
+| M6 | Emergency detector | Rules + classifier, threshold tuned for a recall target, fixed safety reply | In progress: rules done |
 | M8 | Policy RAG | Hybrid search (BM25 + embeddings), reranker, citations, abstention | |
 | M10 | Evals and CI gate | Golden set (about 50 cases to start), LLM-judge rubric, GitHub Actions blocks regressions | |
 | M11 | Deploy | Docker, hosted demo, rate limiting | |
